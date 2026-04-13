@@ -48,6 +48,15 @@ pub use agent_lifecycle::*;
 pub mod storage;
 pub use storage::*;
 
+pub mod compliance;
+pub use compliance::*;
+
+pub mod triplex_via;
+pub use triplex_via::*;
+
+pub mod app_composition;
+pub use app_composition::*;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
