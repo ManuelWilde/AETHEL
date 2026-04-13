@@ -396,11 +396,8 @@ mod tests {
 
         let t = q.dequeue().unwrap();
         q.fail(&t.id); // retry_count = 1
-        assert!(q.retry(&t.id)); // ok, count was 1 == max, but can_retry checks <
-
-        // Actually can_retry checks retry_count < max_retries
-        // After fail: retry_count=1, max_retries=1 → 1 < 1 = false
-        // So retry should fail
+        // can_retry: retry_count(1) < max_retries(1) → false
+        assert!(!q.retry(&t.id));
     }
 
     #[test]
