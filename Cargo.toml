@@ -5,6 +5,7 @@ members = [
     "storage",
     "cli",
     "api",
+    "integration-tests",
 ]
 resolver = "2"
 

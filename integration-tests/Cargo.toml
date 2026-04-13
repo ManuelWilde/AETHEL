@@ -1,0 +1,11 @@
+[package]
+name = "aethel_integration_tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dev-dependencies]
+aethel_contracts = { path = "../contracts" }
+aethel_engine = { path = "../engine" }
+aethel_storage = { path = "../storage" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
