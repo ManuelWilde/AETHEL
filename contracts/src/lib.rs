@@ -36,6 +36,15 @@ pub use registry::*;
 pub mod executor;
 pub use executor::*;
 
+pub mod decomposer;
+pub use decomposer::*;
+
+pub mod compression;
+pub use compression::*;
+
+pub mod agent_lifecycle;
+pub use agent_lifecycle::*;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
