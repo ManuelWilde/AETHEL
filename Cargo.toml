@@ -4,6 +4,7 @@ members = [
     "engine",
     "storage",
     "cli",
+    "api",
 ]
 resolver = "2"
 
