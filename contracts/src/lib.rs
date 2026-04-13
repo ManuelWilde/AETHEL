@@ -57,6 +57,9 @@ pub use triplex_via::*;
 pub mod app_composition;
 pub use app_composition::*;
 
+pub mod system;
+pub use system::*;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
