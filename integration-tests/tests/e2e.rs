@@ -209,36 +209,37 @@ fn test_budget_enforcement_and_sub_leasing() {
 fn test_bio_gate_schmitt_trigger_hysteresis() {
     let mut system = AethelSystem::new();
 
-    let signal_calm = BioSignal {
+    // High coherence (0.8 >= 0.70 threshold) → Active
+    let signal_coherent = BioSignal {
         stress: 0.3,
         hrv_coherence: 0.8,
         focus: 0.7,
         measured_at_ms: 0,
     };
-    let state = system.process_bio_signal(&signal_calm);
-    // Low stress → should not be in Active state
-    assert!(!matches!(state, BioGateState::Active));
+    let state = system.process_bio_signal(&signal_coherent);
+    assert!(matches!(state, BioGateState::Active));
 
-    let signal_stress = BioSignal {
+    // Low coherence (0.3 <= 0.55 deactivate threshold) → Reduced
+    let signal_incoherent = BioSignal {
         stress: 0.85,
         hrv_coherence: 0.3,
         focus: 0.2,
         measured_at_ms: 100,
     };
-    let state = system.process_bio_signal(&signal_stress);
-    // High stress → should activate
-    assert!(matches!(state, BioGateState::Active | BioGateState::Reduced));
+    let state = system.process_bio_signal(&signal_incoherent);
+    assert!(matches!(state, BioGateState::Reduced));
 
+    // Mid coherence (0.60 between thresholds), from Reduced → Holding
     let signal_mid = BioSignal {
         stress: 0.60,
-        hrv_coherence: 0.5,
+        hrv_coherence: 0.60,
         focus: 0.5,
         measured_at_ms: 200,
     };
     let state = system.process_bio_signal(&signal_mid);
-    // Hysteresis keeps it active or reduced
-    assert!(matches!(state, BioGateState::Active | BioGateState::Reduced));
+    assert!(matches!(state, BioGateState::Holding));
 
+    // High coherence again → back to Active
     let signal_recover = BioSignal {
         stress: 0.2,
         hrv_coherence: 0.9,
@@ -246,8 +247,7 @@ fn test_bio_gate_schmitt_trigger_hysteresis() {
         measured_at_ms: 300,
     };
     let state = system.process_bio_signal(&signal_recover);
-    // Should recover
-    assert!(matches!(state, BioGateState::Holding | BioGateState::Active));
+    assert!(matches!(state, BioGateState::Active));
 }
 
 // ═══════════════════════════════════════════════════
@@ -614,16 +614,16 @@ async fn test_full_stack_mission() {
     };
     store.save_claim(&claim).unwrap();
 
-    // 4. Process bio-signal
+    // 4. Process bio-signal — coherence 0.7 is right at activate_threshold (0.70) → Active
     let signal = BioSignal {
         stress: 0.4,
-        hrv_coherence: 0.7,
+        hrv_coherence: 0.5,
         focus: 0.6,
         measured_at_ms: 0,
     };
     let bio_state = runtime.process_bio_signal(&signal);
-    // Normal conditions → should not be Active
-    assert!(!matches!(bio_state, BioGateState::Active));
+    // coherence 0.5 <= 0.55 deactivate threshold → Reduced
+    assert!(matches!(bio_state, BioGateState::Reduced));
 
     // 5. Execute plan
     let plan = DecompositionPlan {
