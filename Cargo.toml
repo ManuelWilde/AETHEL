@@ -3,6 +3,7 @@ members = [
     "contracts",
     "engine",
     "storage",
+    "cli",
 ]
 resolver = "2"
 
