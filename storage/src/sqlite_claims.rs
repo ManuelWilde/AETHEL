@@ -224,9 +224,9 @@ fn parse_claim_state(s: &str) -> Result<ClaimState, AethelError> {
 fn parse_claim_origin(s: &str) -> Result<ClaimOrigin, AethelError> {
     match s {
         "ModelGenerated" => Ok(ClaimOrigin::ModelGenerated),
-        "UserSupplied" => Ok(ClaimOrigin::UserSupplied),
-        "Hybrid" => Ok(ClaimOrigin::Hybrid),
-        "ExternalSource" => Ok(ClaimOrigin::ExternalSource),
+        "Retrieved" => Ok(ClaimOrigin::Retrieved),
+        "HumanEntered" => Ok(ClaimOrigin::HumanEntered),
+        "ImportedRecord" => Ok(ClaimOrigin::ImportedRecord),
         _ => Err(AethelError::Storage(format!("Unknown ClaimOrigin: {}", s))),
     }
 }

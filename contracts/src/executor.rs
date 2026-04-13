@@ -218,7 +218,7 @@ mod tests {
     async fn test_execute_with_budget_success() {
         let budget = make_budget(10000, 100.0);
         let mut ctx = ExecutionContext::new(budget, "mission-1");
-        let cap = Arc::new(EchoCap::new(1.0, 10));
+        let cap: Arc<dyn Capability> = Arc::new(EchoCap::new(1.0, 10));
         let result = CapabilityExecutor::execute_with_budget(
             &mut ctx, &cap, CapValue::Text("hello".into())
         ).await.unwrap();
@@ -230,7 +230,7 @@ mod tests {
     async fn test_execute_with_budget_exhausted() {
         let budget = make_budget(5, 0.5);
         let mut ctx = ExecutionContext::new(budget, "mission-1");
-        let cap = Arc::new(EchoCap::new(1.0, 10));
+        let cap: Arc<dyn Capability> = Arc::new(EchoCap::new(1.0, 10));
         let result = CapabilityExecutor::execute_with_budget(
             &mut ctx, &cap, CapValue::Text("hello".into())
         ).await;
@@ -241,7 +241,7 @@ mod tests {
     async fn test_execute_tracks_cost() {
         let budget = make_budget(10000, 100.0);
         let mut ctx = ExecutionContext::new(budget, "mission-1");
-        let cap = Arc::new(EchoCap::new(2.5, 10));
+        let cap: Arc<dyn Capability> = Arc::new(EchoCap::new(2.5, 10));
         CapabilityExecutor::execute_with_budget(&mut ctx, &cap, CapValue::Text("a".into())).await.unwrap();
         CapabilityExecutor::execute_with_budget(&mut ctx, &cap, CapValue::Text("b".into())).await.unwrap();
         assert_eq!(ctx.executions_count, 2);

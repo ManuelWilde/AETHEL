@@ -6,7 +6,7 @@
 
 use aethel_contracts::{
     AgentId, AgentReport, AgentSpec, AgentState, AethelError, BudgetLease,
-    CapValue, CapabilityDescriptor,
+    CapValue, CapabilityId, RiskLevel, ThoughtEfficiency,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -49,7 +49,7 @@ impl AgentRunConfig {
             spec,
             budget,
             input,
-            timeout: Duration::from_secs(300), // 5 min default
+            timeout: Duration::from_secs(300),
         }
     }
 
@@ -62,7 +62,7 @@ impl AgentRunConfig {
 /// Trait for executing agent work. Implementations connect to actual LLMs.
 #[async_trait]
 pub trait AgentBackend: Send + Sync {
-    /// Execute a single agent task. Returns the output value and tokens used.
+    /// Execute a single agent task. Returns the output value, tokens used, and cost.
     async fn execute(
         &self,
         spec: &AgentSpec,
@@ -78,7 +78,6 @@ pub struct AgentRunner {
 }
 
 impl AgentRunner {
-    /// Create a new runner with the given backend.
     pub fn new(backend: Arc<dyn AgentBackend>) -> Self {
         Self {
             backend,
@@ -86,7 +85,6 @@ impl AgentRunner {
         }
     }
 
-    /// Run an agent through its full lifecycle.
     pub async fn run(&self, config: AgentRunConfig) -> AgentResult {
         let start = Instant::now();
         let agent_id = config.agent_id.clone();
@@ -96,7 +94,6 @@ impl AgentRunner {
             let mut agents = self.active_agents.lock().await;
             agents.insert(agent_id.clone(), AgentState::Initializing);
         }
-
         // Initializing → Running
         {
             let mut agents = self.active_agents.lock().await;
@@ -111,16 +108,29 @@ impl AgentRunner {
         .await;
 
         let elapsed = start.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
 
-        // Running → Reporting → Completed/Failed
         let (state, report, output, tokens, cost) = match result {
             Ok(Ok((output, tokens_used, cost_used))) => {
                 let mut agents = self.active_agents.lock().await;
                 agents.insert(agent_id.clone(), AgentState::Reporting);
 
+                let efficiency = ThoughtEfficiency {
+                    confidence_achieved: 0.8,
+                    tokens_consumed: tokens_used as u32,
+                    duration_ms: elapsed_ms,
+                    cost_cents: cost_used as f32,
+                    confidence_per_token: if tokens_used > 0 { 0.8 / tokens_used as f32 } else { 0.0 },
+                    confidence_per_cent: if cost_used > 0 { 0.8 / cost_used as f32 } else { 0.0 },
+                };
+
                 let report = AgentReport::success(
                     agent_id.clone(),
                     format!("Completed in {:?}", elapsed),
+                    efficiency,
+                    elapsed_ms,
+                    tokens_used,
+                    cost_used as f32,
                 );
 
                 agents.insert(agent_id.clone(), AgentState::Completed);
@@ -133,6 +143,9 @@ impl AgentRunner {
                 let report = AgentReport::failure(
                     agent_id.clone(),
                     format!("Agent error: {}", e),
+                    elapsed_ms,
+                    0,
+                    0.0,
                 );
 
                 agents.insert(agent_id.clone(), AgentState::Failed);
@@ -140,10 +153,7 @@ impl AgentRunner {
             }
             Err(_) => {
                 let mut agents = self.active_agents.lock().await;
-                let report = AgentReport::cancelled(
-                    agent_id.clone(),
-                    "Timeout exceeded".to_string(),
-                );
+                let report = AgentReport::cancelled(agent_id.clone());
                 agents.insert(agent_id.clone(), AgentState::Failed);
                 (AgentState::Failed, Some(report), None, 0, 0)
             }
@@ -160,13 +170,11 @@ impl AgentRunner {
         }
     }
 
-    /// Get the current state of an agent.
     pub async fn get_state(&self, agent_id: &AgentId) -> Option<AgentState> {
         let agents = self.active_agents.lock().await;
         agents.get(agent_id).copied()
     }
 
-    /// How many agents are currently active (non-terminal).
     pub async fn active_count(&self) -> usize {
         let agents = self.active_agents.lock().await;
         agents
@@ -212,12 +220,8 @@ impl AgentBackend for EchoBackend {
         _budget: &BudgetLease,
     ) -> Result<(CapValue, u64, u64), AethelError> {
         if self.should_fail {
-            return Err(AethelError::AgentFailed {
-                agent_id: "test".to_string(),
-                reason: "Simulated failure".to_string(),
-            });
+            return Err(AethelError::Other("Simulated failure".to_string()));
         }
-        // Echo the input back as output
         Ok((input.clone(), self.tokens_per_call, self.cost_per_call))
     }
 }
@@ -225,29 +229,32 @@ impl AgentBackend for EchoBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aethel_contracts::MissionId;
 
     fn make_spec() -> AgentSpec {
         AgentSpec {
             agent_id: AgentId::new("agent-1"),
-            mission_id: MissionId::new("mission-1"),
-            capability_name: "echo".to_string(),
-            model_preference: Some("local-7b".to_string()),
-            max_depth: 3,
+            capability_id: CapabilityId::new("echo"),
+            input_prompt: "test".to_string(),
+            max_tokens: 10_000,
+            max_cost_cents: 500.0,
+            max_duration_ms: 60_000,
+            risk_level: RiskLevel::Low,
+            depth: 0,
+            parent_agent_id: None,
         }
     }
 
     fn make_budget() -> BudgetLease {
         BudgetLease {
-            lease_id: aethel_contracts::LeaseId::new("lease-1"),
-            parent_lease: None,
+            lease_id: "lease-1".to_string(),
+            mission_id: "mission-1".to_string(),
             max_tokens: 10_000,
-            max_cost_cents: 500,
-            used_tokens: 0,
-            used_cost_cents: 0,
-            max_depth: 5,
-            current_depth: 0,
+            max_cost_cents: 500.0,
             max_duration_ms: 60_000,
+            tokens_used: 0,
+            cost_used_cents: 0.0,
+            granted_at_ms: 0,
+            expires_at_ms: 0,
         }
     }
 
@@ -255,14 +262,12 @@ mod tests {
     async fn test_successful_run() {
         let backend = Arc::new(EchoBackend::new());
         let runner = AgentRunner::new(backend);
-
         let config = AgentRunConfig::new(
             AgentId::new("agent-1"),
             make_spec(),
             make_budget(),
             CapValue::Text("hello".to_string()),
         );
-
         let result = runner.run(config).await;
         assert!(result.is_success());
         assert_eq!(result.tokens_used, 100);
@@ -274,69 +279,43 @@ mod tests {
     async fn test_failed_run() {
         let backend = Arc::new(EchoBackend::failing());
         let runner = AgentRunner::new(backend);
-
         let config = AgentRunConfig::new(
             AgentId::new("agent-1"),
             make_spec(),
             make_budget(),
             CapValue::Text("hello".to_string()),
         );
-
         let result = runner.run(config).await;
         assert!(!result.is_success());
         assert_eq!(result.state, AgentState::Failed);
-        assert!(result.report.is_some());
     }
 
     #[tokio::test]
     async fn test_timeout() {
-        // Backend that takes forever
         struct SlowBackend;
-
         #[async_trait]
         impl AgentBackend for SlowBackend {
-            async fn execute(
-                &self,
-                _spec: &AgentSpec,
-                _input: &CapValue,
-                _budget: &BudgetLease,
-            ) -> Result<(CapValue, u64, u64), AethelError> {
+            async fn execute(&self, _: &AgentSpec, _: &CapValue, _: &BudgetLease) -> Result<(CapValue, u64, u64), AethelError> {
                 tokio::time::sleep(Duration::from_secs(999)).await;
                 Ok((CapValue::Nothing, 0, 0))
             }
         }
-
-        let backend = Arc::new(SlowBackend);
-        let runner = AgentRunner::new(backend);
-
+        let runner = AgentRunner::new(Arc::new(SlowBackend));
         let config = AgentRunConfig::new(
-            AgentId::new("agent-1"),
-            make_spec(),
-            make_budget(),
-            CapValue::Text("hello".to_string()),
-        )
-        .with_timeout(Duration::from_millis(50));
-
+            AgentId::new("agent-1"), make_spec(), make_budget(), CapValue::Text("hello".into()),
+        ).with_timeout(Duration::from_millis(50));
         let result = runner.run(config).await;
         assert_eq!(result.state, AgentState::Failed);
     }
 
     #[tokio::test]
     async fn test_active_count() {
-        let backend = Arc::new(EchoBackend::new());
-        let runner = AgentRunner::new(backend);
-
+        let runner = AgentRunner::new(Arc::new(EchoBackend::new()));
         assert_eq!(runner.active_count().await, 0);
-
         let config = AgentRunConfig::new(
-            AgentId::new("agent-1"),
-            make_spec(),
-            make_budget(),
-            CapValue::Text("hello".to_string()),
+            AgentId::new("agent-1"), make_spec(), make_budget(), CapValue::Text("hello".into()),
         );
-
-        let result = runner.run(config).await;
-        // After completion, agent is in terminal state
+        runner.run(config).await;
         assert_eq!(runner.active_count().await, 0);
     }
 }

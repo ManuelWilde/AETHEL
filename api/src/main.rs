@@ -21,6 +21,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -30,7 +31,7 @@ use aethel_storage::{DbPool, SqliteClaimStore};
 // ─── Application State ──────────────────────────
 
 struct AppState {
-    system: AethelSystem,
+    system: RwLock<AethelSystem>,
     claim_store: SqliteClaimStore,
 }
 
@@ -120,11 +121,21 @@ struct HealthResponse {
 }
 
 #[derive(Serialize)]
+struct SystemSummaryResponse {
+    capabilities_count: usize,
+    apps_count: usize,
+    audit_blocks: usize,
+    is_compliant: bool,
+    bio_gate_state: String,
+    timestamp_ms: u64,
+}
+
+#[derive(Serialize)]
 struct BioSignalResponse {
     stress: f64,
     coherence: f64,
     focus: f64,
-    bio_gate_activated: bool,
+    bio_gate_state: String,
 }
 
 #[derive(Serialize)]
@@ -169,9 +180,17 @@ async fn health() -> Json<ApiResponse<HealthResponse>> {
 
 async fn system_summary(
     State(state): State<SharedState>,
-) -> Json<ApiResponse<SystemSummary>> {
-    let summary = state.system.summary();
-    ApiResponse::ok(summary)
+) -> Json<ApiResponse<SystemSummaryResponse>> {
+    let system = state.system.read().await;
+    let summary = system.summary();
+    ApiResponse::ok(SystemSummaryResponse {
+        capabilities_count: summary.capabilities_count,
+        apps_count: summary.apps_count,
+        audit_blocks: summary.audit_blocks,
+        is_compliant: summary.is_compliant,
+        bio_gate_state: format!("{:?}", summary.bio_gate_state),
+        timestamp_ms: summary.timestamp_ms,
+    })
 }
 
 async fn create_claim(
@@ -190,7 +209,7 @@ async fn create_claim(
         id: id.clone(),
         content: req.content,
         state: ClaimState::Generated,
-        origin: ClaimOrigin::UserSupplied,
+        origin: ClaimOrigin::HumanEntered,
         support_level: SupportLevel::Unsupported,
         risk,
         confidence: req.confidence,
@@ -205,10 +224,15 @@ async fn create_claim(
         .map_err(|e| ApiResponse::err(e.to_string()))?;
 
     // Audit the creation
-    state.system.audit_decision(
-        &format!("Claim created: {}", id),
-        risk,
-    );
+    {
+        let mut system = state.system.write().await;
+        system.audit_decision(
+            "create_claim",
+            "api",
+            &format!("Claim created: {}", id),
+            risk,
+        );
+    }
 
     Ok(ApiResponse::ok(ClaimResponse::from(claim)))
 }
@@ -283,10 +307,15 @@ async fn transition_claim(
         .save_claim(&claim)
         .map_err(|e| ApiResponse::err(e.to_string()))?;
 
-    state.system.audit_decision(
-        &format!("Claim '{}' transitioned to {:?}", id, new_state),
-        claim.risk,
-    );
+    {
+        let mut system = state.system.write().await;
+        system.audit_decision(
+            "transition_claim",
+            "api",
+            &format!("Claim '{}' transitioned to {:?}", id, new_state),
+            claim.risk,
+        );
+    }
 
     Ok(ApiResponse::ok(ClaimResponse::from(claim)))
 }
@@ -295,23 +324,30 @@ async fn bio_signal(
     State(state): State<SharedState>,
     Json(req): Json<BioSignalRequest>,
 ) -> Json<ApiResponse<BioSignalResponse>> {
-    let activated = state
-        .system
-        .process_bio_signal(req.stress, req.coherence, req.focus);
+    let signal = BioSignal {
+        stress: req.stress as f32,
+        focus: req.focus as f32,
+        hrv_coherence: req.coherence as f32,
+        measured_at_ms: 0,
+    };
+
+    let mut system = state.system.write().await;
+    let gate_state = system.process_bio_signal(&signal);
 
     ApiResponse::ok(BioSignalResponse {
         stress: req.stress,
         coherence: req.coherence,
         focus: req.focus,
-        bio_gate_activated: activated,
+        bio_gate_state: format!("{:?}", gate_state),
     })
 }
 
 async fn audit_verify(
     State(state): State<SharedState>,
 ) -> Json<ApiResponse<AuditVerifyResponse>> {
-    let integrity = state.system.verify_audit_integrity();
-    let summary = state.system.summary();
+    let system = state.system.read().await;
+    let integrity = system.verify_audit_integrity().is_ok();
+    let summary = system.summary();
     ApiResponse::ok(AuditVerifyResponse {
         integrity,
         block_count: summary.audit_blocks,
@@ -323,7 +359,8 @@ async fn audit_record(
     Json(req): Json<AuditRecordRequest>,
 ) -> Json<ApiResponse<String>> {
     let risk = parse_risk(&req.risk);
-    state.system.audit_decision(&req.decision, risk);
+    let mut system = state.system.write().await;
+    system.audit_decision("audit_record", "api", &req.decision, risk);
     ApiResponse::ok(format!("Decision recorded: {}", req.decision))
 }
 
@@ -373,13 +410,10 @@ async fn main() {
     pool.initialize().expect("Failed to run migrations");
 
     // System
-    let system = AethelSystem::new(
-        ComplianceManifest::aethel_default(),
-        CompressionConfig::default(),
-    );
+    let system = AethelSystem::new();
 
     let state = Arc::new(AppState {
-        system,
+        system: RwLock::new(system),
         claim_store: SqliteClaimStore::new(pool),
     });
 

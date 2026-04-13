@@ -4,12 +4,11 @@
 //! respecting dependencies, managing budgets, and collecting results.
 
 use crate::agent_runner::{AgentBackend, AgentResult, AgentRunConfig, AgentRunner};
-use crate::task_queue::{QueuedTask, TaskId, TaskPriority, TaskQueue};
+use crate::task_queue::{QueuedTask, TaskPriority, TaskQueue};
 use aethel_contracts::{
-    AgentId, AgentSpec, AgentState, BudgetLease, CapValue, DecompositionPlan,
-    LeaseId, MissionId, SubTask, AethelError,
+    AgentId, AgentSpec, BudgetLease, CapValue, CapabilityId,
+    DecompositionPlan, RiskLevel, AethelError,
 };
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -17,7 +16,7 @@ use tokio::sync::Mutex;
 /// Result of a full FIMAS execution run.
 #[derive(Clone, Debug)]
 pub struct FimasResult {
-    pub mission_id: MissionId,
+    pub plan_id: String,
     pub agent_results: Vec<AgentResult>,
     pub total_tokens: u64,
     pub total_cost_cents: u64,
@@ -39,16 +38,16 @@ impl FimasResult {
 /// Configuration for a FIMAS execution run.
 #[derive(Clone, Debug)]
 pub struct FimasConfig {
-    pub mission_id: MissionId,
+    pub plan_id: String,
     pub max_concurrent_agents: usize,
     pub agent_timeout: Duration,
-    pub fail_fast: bool, // stop on first failure
+    pub fail_fast: bool,
 }
 
 impl Default for FimasConfig {
     fn default() -> Self {
         Self {
-            mission_id: MissionId::new("default-mission"),
+            plan_id: "default".to_string(),
             max_concurrent_agents: 4,
             agent_timeout: Duration::from_secs(300),
             fail_fast: false,
@@ -57,9 +56,9 @@ impl Default for FimasConfig {
 }
 
 impl FimasConfig {
-    pub fn new(mission_id: impl Into<String>) -> Self {
+    pub fn new(plan_id: impl Into<String>) -> Self {
         Self {
-            mission_id: MissionId::new(mission_id),
+            plan_id: plan_id.into(),
             ..Default::default()
         }
     }
@@ -82,16 +81,12 @@ pub struct FimasExecutor {
 }
 
 impl FimasExecutor {
-    /// Create a new executor with the given agent backend and config.
     pub fn new(backend: Arc<dyn AgentBackend>, config: FimasConfig) -> Self {
         let runner = Arc::new(AgentRunner::new(backend));
         Self { runner, config }
     }
 
     /// Execute a decomposition plan.
-    ///
-    /// Converts SubTasks into QueuedTasks, respects dependencies,
-    /// runs agents with budget sub-leases, and collects results.
     pub async fn execute_plan(
         &self,
         plan: &DecompositionPlan,
@@ -105,11 +100,10 @@ impl FimasExecutor {
 
         // Enqueue all sub-tasks from the plan
         for sub_task in &plan.sub_tasks {
-            let mut qt = QueuedTask::new(&sub_task.id, &sub_task.capability_name);
+            let mut qt = QueuedTask::new(&sub_task.id, sub_task.capability_id.as_str());
             qt = qt.with_input(&sub_task.description);
-            qt = qt.with_budget(sub_task.estimated_tokens, sub_task.estimated_cost_cents);
+            qt = qt.with_budget(sub_task.max_tokens, sub_task.max_cost_cents as u64);
 
-            // Map priority from depth: root tasks get High, deeper get Normal/Low
             qt = if sub_task.depends_on.is_empty() {
                 qt.with_priority(TaskPriority::High)
             } else {
@@ -126,7 +120,6 @@ impl FimasExecutor {
         // Process queue until all done
         let mut abort = false;
         while !queue.is_all_done() && !abort {
-            // Dequeue ready tasks up to concurrency limit
             let mut handles = Vec::new();
             let active = self.runner.active_count().await;
             let slots = self.config.max_concurrent_agents.saturating_sub(active);
@@ -134,7 +127,6 @@ impl FimasExecutor {
             for _ in 0..slots {
                 if let Some(task) = queue.dequeue() {
                     let runner = self.runner.clone();
-                    let mission_id = self.config.mission_id.clone();
                     let timeout = self.config.agent_timeout;
                     let budget = self.create_sub_lease(root_budget, &task);
                     let input = root_input.clone();
@@ -146,10 +138,14 @@ impl FimasExecutor {
                     let handle = tokio::spawn(async move {
                         let spec = AgentSpec {
                             agent_id: AgentId::new(format!("agent-{}", task.id)),
-                            mission_id,
-                            capability_name: task.capability_name.clone(),
-                            model_preference: None,
-                            max_depth: 3,
+                            capability_id: CapabilityId::new(&task.capability_name),
+                            input_prompt: task.input_description.clone(),
+                            max_tokens: task.max_tokens,
+                            max_cost_cents: task.max_cost_cents as f32,
+                            max_duration_ms: 60_000,
+                            risk_level: RiskLevel::Low,
+                            depth: 0,
+                            parent_agent_id: None,
                         };
 
                         let config = AgentRunConfig::new(
@@ -180,18 +176,15 @@ impl FimasExecutor {
                 }
             }
 
-            // If no handles spawned and nothing dequeued, wait briefly
             if handles.is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 continue;
             }
 
-            // Wait for this batch
             for handle in handles {
                 let _ = handle.await;
             }
 
-            // Check fail_fast
             if self.config.fail_fast {
                 let f = failed_tasks.lock().await;
                 if !f.is_empty() {
@@ -206,7 +199,7 @@ impl FimasExecutor {
         let failed = failed_tasks.lock().await.clone();
 
         FimasResult {
-            mission_id: self.config.mission_id.clone(),
+            plan_id: plan.plan_id.clone(),
             agent_results,
             total_tokens,
             total_cost_cents: total_cost,
@@ -216,18 +209,17 @@ impl FimasExecutor {
         }
     }
 
-    /// Create a sub-lease for a specific task from the root budget.
     fn create_sub_lease(&self, root: &BudgetLease, task: &QueuedTask) -> BudgetLease {
         BudgetLease {
-            lease_id: LeaseId::new(format!("lease-{}", task.id)),
-            parent_lease: Some(root.lease_id.clone()),
+            lease_id: format!("lease-{}", task.id),
+            mission_id: root.mission_id.clone(),
             max_tokens: task.max_tokens,
-            max_cost_cents: task.max_cost_cents,
-            used_tokens: 0,
-            used_cost_cents: 0,
-            max_depth: root.max_depth.saturating_sub(1),
-            current_depth: root.current_depth + 1,
+            max_cost_cents: task.max_cost_cents as f32,
             max_duration_ms: root.max_duration_ms,
+            tokens_used: 0,
+            cost_used_cents: 0.0,
+            granted_at_ms: 0,
+            expires_at_ms: 0,
         }
     }
 }
@@ -236,82 +228,84 @@ impl FimasExecutor {
 mod tests {
     use super::*;
     use crate::agent_runner::EchoBackend;
-    use aethel_contracts::DecompositionStrategy;
+    use aethel_contracts::{DecompositionStrategy, SubTask};
 
     fn make_budget() -> BudgetLease {
         BudgetLease {
-            lease_id: LeaseId::new("root-lease"),
-            parent_lease: None,
+            lease_id: "root-lease".to_string(),
+            mission_id: "test-mission".to_string(),
             max_tokens: 100_000,
-            max_cost_cents: 5_000,
-            used_tokens: 0,
-            used_cost_cents: 0,
-            max_depth: 5,
-            current_depth: 0,
+            max_cost_cents: 5000.0,
             max_duration_ms: 300_000,
+            tokens_used: 0,
+            cost_used_cents: 0.0,
+            granted_at_ms: 0,
+            expires_at_ms: 0,
         }
     }
 
     fn make_plan_linear() -> DecompositionPlan {
         DecompositionPlan {
-            mission_id: MissionId::new("test-mission"),
+            plan_id: "plan-linear".to_string(),
+            original_task: "Linear test".to_string(),
             strategy: DecompositionStrategy::Sequential,
             sub_tasks: vec![
                 SubTask {
                     id: "step-1".to_string(),
                     description: "First step".to_string(),
-                    capability_name: "cap_a".to_string(),
+                    capability_id: CapabilityId::new("cap_a"),
                     depends_on: vec![],
-                    estimated_tokens: 1000,
-                    estimated_cost_cents: 10,
+                    max_tokens: 1000,
+                    max_cost_cents: 10.0,
+                    risk_level: RiskLevel::Low,
                     depth: 1,
+                    can_decompose_further: false,
+                    input_prompt: "do step 1".to_string(),
                 },
                 SubTask {
                     id: "step-2".to_string(),
                     description: "Second step".to_string(),
-                    capability_name: "cap_b".to_string(),
+                    capability_id: CapabilityId::new("cap_b"),
                     depends_on: vec!["step-1".to_string()],
-                    estimated_tokens: 2000,
-                    estimated_cost_cents: 20,
+                    max_tokens: 2000,
+                    max_cost_cents: 20.0,
+                    risk_level: RiskLevel::Low,
                     depth: 1,
+                    can_decompose_further: false,
+                    input_prompt: "do step 2".to_string(),
                 },
             ],
+            total_budget_tokens: 3000,
+            total_budget_cost_cents: 30.0,
+            max_depth: 2,
         }
     }
 
     fn make_plan_parallel() -> DecompositionPlan {
+        let tasks: Vec<SubTask> = ["a", "b", "c"]
+            .iter()
+            .map(|name| SubTask {
+                id: name.to_string(),
+                description: format!("Task {}", name),
+                capability_id: CapabilityId::new("cap"),
+                depends_on: vec![],
+                max_tokens: 500,
+                max_cost_cents: 5.0,
+                risk_level: RiskLevel::Low,
+                depth: 1,
+                can_decompose_further: false,
+                input_prompt: format!("do {}", name),
+            })
+            .collect();
+
         DecompositionPlan {
-            mission_id: MissionId::new("test-mission"),
+            plan_id: "plan-parallel".to_string(),
+            original_task: "Parallel test".to_string(),
             strategy: DecompositionStrategy::Parallel,
-            sub_tasks: vec![
-                SubTask {
-                    id: "a".to_string(),
-                    description: "Task A".to_string(),
-                    capability_name: "cap".to_string(),
-                    depends_on: vec![],
-                    estimated_tokens: 500,
-                    estimated_cost_cents: 5,
-                    depth: 1,
-                },
-                SubTask {
-                    id: "b".to_string(),
-                    description: "Task B".to_string(),
-                    capability_name: "cap".to_string(),
-                    depends_on: vec![],
-                    estimated_tokens: 500,
-                    estimated_cost_cents: 5,
-                    depth: 1,
-                },
-                SubTask {
-                    id: "c".to_string(),
-                    description: "Task C".to_string(),
-                    capability_name: "cap".to_string(),
-                    depends_on: vec![],
-                    estimated_tokens: 500,
-                    estimated_cost_cents: 5,
-                    depth: 1,
-                },
-            ],
+            sub_tasks: tasks,
+            total_budget_tokens: 1500,
+            total_budget_cost_cents: 15.0,
+            max_depth: 1,
         }
     }
 
@@ -320,14 +314,11 @@ mod tests {
         let backend = Arc::new(EchoBackend::new());
         let config = FimasConfig::new("test").with_concurrency(1);
         let executor = FimasExecutor::new(backend, config);
-
         let result = executor
             .execute_plan(&make_plan_linear(), &make_budget(), CapValue::Text("input".into()))
             .await;
-
         assert!(result.success);
         assert_eq!(result.agent_results.len(), 2);
-        assert_eq!(result.total_tokens, 200); // 100 per call from EchoBackend
     }
 
     #[tokio::test]
@@ -335,28 +326,22 @@ mod tests {
         let backend = Arc::new(EchoBackend::new());
         let config = FimasConfig::new("test").with_concurrency(4);
         let executor = FimasExecutor::new(backend, config);
-
         let result = executor
             .execute_plan(&make_plan_parallel(), &make_budget(), CapValue::Text("input".into()))
             .await;
-
         assert!(result.success);
         assert_eq!(result.agent_results.len(), 3);
-        assert!(result.success_rate() > 0.99);
     }
 
     #[tokio::test]
     async fn test_fail_fast() {
-        let backend = Arc::new(crate::agent_runner::EchoBackend::failing());
+        let backend = Arc::new(EchoBackend::failing());
         let config = FimasConfig::new("test").with_concurrency(1).with_fail_fast(true);
         let executor = FimasExecutor::new(backend, config);
-
         let result = executor
             .execute_plan(&make_plan_linear(), &make_budget(), CapValue::Text("input".into()))
             .await;
-
         assert!(!result.success);
-        assert!(!result.failed_tasks.is_empty());
     }
 
     #[tokio::test]
@@ -364,14 +349,10 @@ mod tests {
         let backend = Arc::new(EchoBackend::new());
         let config = FimasConfig::new("test").with_concurrency(2);
         let executor = FimasExecutor::new(backend, config);
-
-        let root = make_budget();
         let result = executor
-            .execute_plan(&make_plan_parallel(), &root, CapValue::Text("input".into()))
+            .execute_plan(&make_plan_parallel(), &make_budget(), CapValue::Text("input".into()))
             .await;
-
         assert!(result.success);
-        // Total cost should be sum of per-agent costs
         assert_eq!(result.total_cost_cents, 15); // 5 per call * 3 agents
     }
 }

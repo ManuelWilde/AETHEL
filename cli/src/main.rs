@@ -169,10 +169,7 @@ fn cmd_init(db_path: &str) {
 }
 
 fn cmd_system(action: SystemAction) {
-    let system = AethelSystem::new(
-        ComplianceManifest::aethel_default(),
-        CompressionConfig::default(),
-    );
+    let system = AethelSystem::new();
 
     match action {
         SystemAction::Status => {
@@ -185,12 +182,12 @@ fn cmd_system(action: SystemAction) {
         SystemAction::Summary => {
             let summary = system.summary();
             println!("{}", "AETHEL System Summary".bold().cyan());
-            println!("  Capabilities:  {}", summary.registered_capabilities);
-            println!("  Apps:          {}", summary.registered_apps);
+            println!("  Capabilities:  {}", summary.capabilities_count);
+            println!("  Apps:          {}", summary.apps_count);
             println!("  Audit blocks:  {}", summary.audit_blocks);
-            println!("  Audit intact:  {}", if summary.audit_integrity { "yes".green() } else { "NO".red() });
-            println!("  Bio-gate:      {}", if summary.bio_gate_active { "active".yellow() } else { "inactive".green() });
-            println!("  Compliance:    {}", if summary.compliant { "compliant".green() } else { "non-compliant".red() });
+            println!("  Compliant:     {}", if summary.is_compliant { "yes".green() } else { "NO".red() });
+            println!("  Bio-gate:      {:?}", summary.bio_gate_state);
+            println!("  Timestamp:     {} ms", summary.timestamp_ms);
         }
     }
 }
@@ -213,7 +210,7 @@ fn cmd_claim(action: ClaimAction, db_path: &str) {
                 id: id.clone(),
                 content: text,
                 state: ClaimState::Generated,
-                origin: ClaimOrigin::UserSupplied,
+                origin: ClaimOrigin::HumanEntered,
                 support_level: SupportLevel::Unsupported,
                 risk: risk_level,
                 confidence,
@@ -318,52 +315,45 @@ fn cmd_claim(action: ClaimAction, db_path: &str) {
 }
 
 fn cmd_bio(action: BioAction) {
-    let system = AethelSystem::new(
-        ComplianceManifest::aethel_default(),
-        CompressionConfig::default(),
-    );
+    let mut system = AethelSystem::new();
 
     match action {
         BioAction::Signal { stress, coherence, focus } => {
-            let activated = system.process_bio_signal(stress, coherence, focus);
+            let signal = BioSignal {
+                stress: stress as f32,
+                focus: focus as f32,
+                hrv_coherence: coherence as f32,
+                measured_at_ms: 0,
+            };
+            let state = system.process_bio_signal(&signal);
             println!("{}", "Bio-Signal Processing:".bold().cyan());
             println!("  Stress:     {:.2}", stress);
             println!("  Coherence:  {:.2}", coherence);
             println!("  Focus:      {:.2}", focus);
-
-            if activated {
-                println!("  Bio-Gate:   {} — routing to local/safe providers", "ACTIVATED".red().bold());
-            } else {
-                println!("  Bio-Gate:   {} — normal routing", "inactive".green());
-            }
+            println!("  Bio-Gate:   {:?}", state);
         }
     }
 }
 
 fn cmd_audit(action: AuditAction) {
-    let system = AethelSystem::new(
-        ComplianceManifest::aethel_default(),
-        CompressionConfig::default(),
-    );
+    let mut system = AethelSystem::new();
 
     match action {
         AuditAction::Verify => {
-            let intact = system.verify_audit_integrity();
-            if intact {
-                println!("{} Audit chain integrity: {}", "✓".green(), "VERIFIED".green().bold());
-            } else {
-                println!("{} Audit chain integrity: {}", "✗".red(), "COMPROMISED".red().bold());
+            match system.verify_audit_integrity() {
+                Ok(()) => println!("{} Audit chain integrity: {}", "✓".green(), "VERIFIED".green().bold()),
+                Err(e) => println!("{} Audit chain integrity: {} ({})", "✗".red(), "COMPROMISED".red().bold(), e),
             }
         }
         AuditAction::Info => {
             let summary = system.summary();
             println!("{}", "Audit Chain Info:".bold().cyan());
             println!("  Blocks:     {}", summary.audit_blocks);
-            println!("  Integrity:  {}", if summary.audit_integrity { "intact".green() } else { "broken".red() });
+            println!("  Compliant:  {}", if summary.is_compliant { "yes".green() } else { "no".red() });
         }
         AuditAction::Record { decision, risk } => {
             let risk_level = parse_risk(&risk);
-            system.audit_decision(&decision, risk_level);
+            system.audit_decision("cli_record", "user", &decision, risk_level);
             println!("{} Decision recorded: \"{}\" (risk: {:?})", "✓".green(), decision, risk_level);
         }
     }
