@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  cargo-test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --verbose
+
+      - name: Build docs
+        run: cargo doc --workspace --no-deps
+
+  # Count unwrap() calls — should decrease over time
+  unwrap-count:
+    name: Track unwrap() usage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Count unwrap calls
+        run: |
+          count=$(grep -r "\.unwrap()" --include="*.rs" | grep -v "test" | grep -v "#\[cfg(test)\]" | wc -l)
+          echo "## unwrap() Count: $count" >> $GITHUB_STEP_SUMMARY
+          echo "Goal: 0 in new code (contracts/)" >> $GITHUB_STEP_SUMMARY
+          # Fail if contracts/ has any unwrap (new code must be clean)
+          contracts_count=$(grep -r "\.unwrap()" contracts/src/ --include="*.rs" | grep -v "#\[test\]" | grep -v "#\[cfg(test)\]" | wc -l || echo 0)
+          echo "contracts/ unwrap() count: $contracts_count" >> $GITHUB_STEP_SUMMARY
+          if [ "$contracts_count" -gt "0" ]; then
+            echo "ERROR: contracts/ must have 0 unwrap() calls in non-test code"
+            exit 1
+          fi
