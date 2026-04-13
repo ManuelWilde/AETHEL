@@ -6,7 +6,7 @@
 
 use aethel_contracts::{
     AgentId, AgentReport, AgentSpec, AgentState, AethelError, BudgetLease,
-    CapValue, ThoughtEfficiency,
+    CapValue, CapabilityId, RiskLevel, ThoughtEfficiency,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
