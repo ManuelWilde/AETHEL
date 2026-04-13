@@ -317,11 +317,14 @@ fn test_app_composed_mode() {
     let mut system = AethelSystem::new();
 
     let app = AppDefinition {
-        id: "app-1".into(),
+        app_id: "app-1".into(),
         name: "Claim Analyzer".into(),
         mode: AppMode::Composed,
         pipeline_id: Some(PipelineId::new("pipe-1")),
-        capabilities: vec![],
+        required_capabilities: vec![],
+        version: "0.1.0".into(),
+        author: "test".into(),
+        risk_level: RiskLevel::Low,
         tags: vec!["analysis".into(), "claims".into()],
         description: "Analyzes claims through a pipeline".into(),
     };
@@ -336,11 +339,14 @@ fn test_app_composed_mode() {
 #[test]
 fn test_app_classic_mode_requires_capabilities() {
     let app = AppDefinition {
-        id: "app-bad".into(),
+        app_id: "app-bad".into(),
         name: "Empty Classic".into(),
         mode: AppMode::Classic,
         pipeline_id: None,
-        capabilities: vec![],
+        required_capabilities: vec![],
+        version: "0.1.0".into(),
+        author: "test".into(),
+        risk_level: RiskLevel::Low,
         tags: vec![],
         description: "Should fail validation".into(),
     };

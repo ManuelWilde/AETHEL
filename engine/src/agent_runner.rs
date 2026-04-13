@@ -6,8 +6,10 @@
 
 use aethel_contracts::{
     AgentId, AgentReport, AgentSpec, AgentState, AethelError, BudgetLease,
-    CapValue, CapabilityId, RiskLevel, ThoughtEfficiency,
+    CapValue, ThoughtEfficiency,
 };
+#[cfg(test)]
+use aethel_contracts::{CapabilityId, RiskLevel};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
