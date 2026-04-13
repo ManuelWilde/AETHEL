@@ -9,7 +9,7 @@ use crate::task_queue::TaskQueue;
 use aethel_contracts::{
     AethelSystem, BioSignal, BioGateState, BudgetLease, CapValue,
     Capability, DecompositionPlan, RiskLevel, ThoughtPressure,
-    CompressionResult, EuAiActRiskLevel, SystemSummary,
+    CompressionResult, SystemSummary,
 };
 use std::sync::Arc;
 

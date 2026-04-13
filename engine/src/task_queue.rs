@@ -3,6 +3,7 @@
 //! A priority-based, dependency-aware task queue that feeds the FIMAS executor.
 //! Tasks are ordered by priority and only become ready when all dependencies are met.
 
+use aethel_contracts::AgentId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

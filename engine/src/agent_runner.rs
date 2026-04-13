@@ -6,7 +6,7 @@
 
 use aethel_contracts::{
     AgentId, AgentReport, AgentSpec, AgentState, AethelError, BudgetLease,
-    CapValue, CapabilityId, RiskLevel, ThoughtEfficiency,
+    CapValue, ThoughtEfficiency,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -122,6 +122,8 @@ impl AgentRunner {
                     cost_cents: cost_used as f32,
                     confidence_per_token: if tokens_used > 0 { 0.8 / tokens_used as f32 } else { 0.0 },
                     confidence_per_cent: if cost_used > 0 { 0.8 / cost_used as f32 } else { 0.0 },
+                    layers_passed: 1,
+                    layers_total: 1,
                 };
 
                 let report = AgentReport::success(

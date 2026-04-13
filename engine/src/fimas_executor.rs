@@ -7,7 +7,7 @@ use crate::agent_runner::{AgentBackend, AgentResult, AgentRunConfig, AgentRunner
 use crate::task_queue::{QueuedTask, TaskPriority, TaskQueue};
 use aethel_contracts::{
     AgentId, AgentSpec, BudgetLease, CapValue, CapabilityId,
-    DecompositionPlan, RiskLevel, AethelError,
+    DecompositionPlan, RiskLevel,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
