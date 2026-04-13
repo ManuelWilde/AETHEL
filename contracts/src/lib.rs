@@ -24,6 +24,18 @@ pub mod transitions;
 
 pub mod budget;
 
+pub mod capability;
+pub use capability::*;
+
+pub mod pipeline;
+pub use pipeline::*;
+
+pub mod registry;
+pub use registry::*;
+
+pub mod executor;
+pub use executor::*;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
