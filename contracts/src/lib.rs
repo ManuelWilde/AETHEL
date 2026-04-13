@@ -45,6 +45,9 @@ pub use compression::*;
 pub mod agent_lifecycle;
 pub use agent_lifecycle::*;
 
+pub mod storage;
+pub use storage::*;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
