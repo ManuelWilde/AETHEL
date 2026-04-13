@@ -14,6 +14,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod error;
+pub use error::AethelError;
+
+pub mod ids;
+pub use ids::*;
+
+pub mod transitions;
+
+pub mod budget;
+
 // ─────────────────────────────────────────────
 // L0: Primitives & Enums
 // ─────────────────────────────────────────────
