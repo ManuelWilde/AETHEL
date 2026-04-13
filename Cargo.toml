@@ -2,6 +2,7 @@
 members = [
     "contracts",
     "engine",
+    "storage",
 ]
 resolver = "2"
 
